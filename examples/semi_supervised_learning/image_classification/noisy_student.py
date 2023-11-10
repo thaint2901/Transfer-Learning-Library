@@ -8,7 +8,10 @@ import time
 import warnings
 import argparse
 import shutil
+import os
 
+import cv2
+import albumentations as A
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,6 +21,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 
 import utils
+from mx_dataset import MX_WFAS
 from tllib.vision.models.reid.loss import CrossEntropyLoss
 from tllib.modules.classifier import Classifier
 from tllib.vision.transforms import MultipleApply
@@ -103,37 +107,68 @@ def main(args: argparse.Namespace):
     cudnn.benchmark = True
 
     # Data loading code
-    weak_augment = utils.get_train_transform(args.train_resizing, random_horizontal_flip=True,
-                                             norm_mean=args.norm_mean, norm_std=args.norm_std)
-    strong_augment = utils.get_train_transform(args.train_resizing, random_horizontal_flip=True,
-                                               auto_augment=args.auto_augment,
-                                               norm_mean=args.norm_mean, norm_std=args.norm_std)
+    strong_augment = A.Compose([
+        A.Resize(height=224, width=224, interpolation=cv2.INTER_CUBIC),
+        A.HorizontalFlip(p=0.5),
+        A.augmentations.transforms.ISONoise(color_shift=(0.15,0.35),
+                                            intensity=(0.2, 0.5), p=0.2),
+        A.augmentations.transforms.RandomBrightnessContrast(brightness_limit=0.2,
+                                                            contrast_limit=0.2,
+                                                            brightness_by_max=True,
+                                                            always_apply=False, p=0.3),
+        A.augmentations.transforms.MotionBlur(blur_limit=5, p=0.2),
+        A.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+    weak_augment = A.Compose([
+        A.Resize(height=224, width=224, interpolation=cv2.INTER_CUBIC),
+        A.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+    # weak_augment = utils.get_train_transform(args.train_resizing, random_horizontal_flip=True,
+    #                                          norm_mean=args.norm_mean, norm_std=args.norm_std)
+    # strong_augment = utils.get_train_transform(args.train_resizing, random_horizontal_flip=True,
+    #                                            auto_augment=args.auto_augment,
+    #                                            norm_mean=args.norm_mean, norm_std=args.norm_std)
     labeled_train_transform = MultipleApply([weak_augment, strong_augment])
-    val_transform = utils.get_val_transform(args.val_resizing, norm_mean=args.norm_mean, norm_std=args.norm_std)
+    # val_transform = utils.get_val_transform(args.val_resizing, norm_mean=args.norm_mean, norm_std=args.norm_std)
     print('labeled_train_transform: ', labeled_train_transform)
     print('weak_augment (input transform for teacher model): ', weak_augment)
     print('strong_augment (input transform for student model): ', strong_augment)
-    print('val_transform:', val_transform)
+    # print('val_transform:', val_transform)
 
-    labeled_train_dataset, weak_augmented_unlabeled_dataset, val_dataset = \
-        utils.get_dataset(args.data,
-                          args.num_samples_per_class,
-                          args.root, labeled_train_transform,
-                          val_transform,
-                          unlabeled_train_transform=weak_augment,
-                          seed=args.seed)
-    _, strong_augmented_unlabeled_dataset, _ = \
-        utils.get_dataset(args.data,
-                          args.num_samples_per_class,
-                          args.root, labeled_train_transform,
-                          val_transform,
-                          unlabeled_train_transform=strong_augment,
-                          seed=args.seed)
+    labeled_train_dataset = MX_WFAS(
+        os.path.join(args.root, "train_4.0.rec"),
+        os.path.join(args.root, "train_4.0.idx"),
+        transform=labeled_train_transform, scale=1.0)
+    labeled_train_dataset[0]
+    weak_augmented_unlabeled_dataset = MX_WFAS(
+        os.path.join(args.root, "test_4.0.rec"),
+        os.path.join(args.root, "test_4.0.idx"),
+        transform=weak_augment, scale=1.0)
+    strong_augmented_unlabeled_dataset = MX_WFAS(
+        os.path.join(args.root, "test_4.0.rec"),
+        os.path.join(args.root, "test_4.0.idx"),
+        transform=strong_augment, scale=1.0)
+    strong_augmented_unlabeled_dataset[0]
+
+    # labeled_train_dataset, weak_augmented_unlabeled_dataset, val_dataset = \
+    #     utils.get_dataset(args.data,
+    #                       args.num_samples_per_class,
+    #                       args.root, labeled_train_transform,
+    #                       val_transform,
+    #                       unlabeled_train_transform=weak_augment,
+    #                       seed=args.seed)
+    # _, strong_augmented_unlabeled_dataset, _ = \
+    #     utils.get_dataset(args.data,
+    #                       args.num_samples_per_class,
+    #                       args.root, labeled_train_transform,
+    #                       val_transform,
+    #                       unlabeled_train_transform=strong_augment,
+    #                       seed=args.seed)
 
     strong_augmented_unlabeled_dataset = utils.convert_dataset(strong_augmented_unlabeled_dataset)
     print("labeled_dataset_size: ", len(labeled_train_dataset))
     print('unlabeled_dataset_size: ', len(weak_augmented_unlabeled_dataset))
-    print("val_dataset_size: ", len(val_dataset))
+    # print("val_dataset_size: ", len(val_dataset))
 
     labeled_train_loader = DataLoader(labeled_train_dataset, batch_size=args.batch_size, shuffle=True,
                                       num_workers=args.workers, drop_last=True)
@@ -141,12 +176,13 @@ def main(args: argparse.Namespace):
                                         num_workers=args.workers, drop_last=True)
     labeled_train_iter = ForeverDataIterator(labeled_train_loader)
     unlabeled_train_iter = ForeverDataIterator(unlabeled_train_loader)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
+    # val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
 
     # create model
+    # TODO: need check output model
     print("=> using pre-trained model '{}'".format(args.arch))
     backbone = utils.get_model(args.arch, pretrained_checkpoint=args.pretrained_backbone)
-    num_classes = labeled_train_dataset.num_classes
+    num_classes = 2
     pool_layer = nn.Identity() if args.no_pool else None
     classifier = ImageClassifier(backbone, num_classes, bottleneck_dim=args.bottleneck_dim, pool_layer=pool_layer,
                                  finetune=args.finetune).to(device)
@@ -174,10 +210,10 @@ def main(args: argparse.Namespace):
 
     # resume from the best checkpoint
     if args.phase == 'test':
-        checkpoint = torch.load(logger.get_checkpoint_path('best'), map_location='cpu')
-        classifier.load_state_dict(checkpoint)
-        acc1, avg = utils.validate(val_loader, classifier, args, device, num_classes)
-        print(acc1)
+        # checkpoint = torch.load(logger.get_checkpoint_path('best'), map_location='cpu')
+        # classifier.load_state_dict(checkpoint)
+        # acc1, avg = utils.validate(val_loader, classifier, args, device, num_classes)
+        # print(acc1)
         return
 
     # start training
@@ -196,14 +232,14 @@ def main(args: argparse.Namespace):
                                               device)
 
         # evaluate on validation set
-        acc1, avg = utils.validate(val_loader, classifier, args, device, num_classes)
+        # acc1, avg = utils.validate(val_loader, classifier, args, device, num_classes)
 
         # remember best acc@1 and save checkpoint
         torch.save(classifier.state_dict(), logger.get_checkpoint_path('latest'))
-        if acc1 > best_acc1:
-            shutil.copy(logger.get_checkpoint_path('latest'), logger.get_checkpoint_path('best'))
-        best_acc1 = max(acc1, best_acc1)
-        best_avg = max(avg, best_avg)
+        # if acc1 > best_acc1:
+        #     shutil.copy(logger.get_checkpoint_path('latest'), logger.get_checkpoint_path('best'))
+        # best_acc1 = max(acc1, best_acc1)
+        # best_avg = max(avg, best_avg)
 
     print("best_acc1 = {:3.1f}".format(best_acc1))
     print('best_avg = {:3.1f}'.format(best_avg))

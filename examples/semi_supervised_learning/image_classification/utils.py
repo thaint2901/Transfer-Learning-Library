@@ -4,6 +4,7 @@
 """
 import math
 import sys
+import os
 import time
 from PIL import Image
 import numpy as np
@@ -16,7 +17,8 @@ import torchvision.transforms as T
 import timm
 from timm.data.auto_augment import auto_augment_transform, rand_augment_transform
 
-sys.path.append('../../..')
+pwd = os.path.dirname(os.path.realpath(__file__))
+sys.path.append(os.path.join(pwd, '../../..'))
 from tllib.modules.classifier import Classifier
 import tllib.vision.datasets as datasets
 import tllib.vision.models as models

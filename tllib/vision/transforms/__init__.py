@@ -52,7 +52,7 @@ class MultipleApply:
         self.transforms = transforms
 
     def __call__(self, image):
-        return [t(image) for t in self.transforms]
+        return {"image": [t(image=image)['image'] for t in self.transforms]}
 
     def __repr__(self):
         format_string = self.__class__.__name__ + '('
